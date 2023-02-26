@@ -8,7 +8,12 @@
 //  DIGI SNES - SNES to USB adapter using Digispark 
 //  Danjovic, 2015-2016 danjovic@hotmail.com        
 //  
-//	V2 - April 29, 2016 - Added auto-fire control
+//	V2 - April 29, 2016 
+//     - Added auto-fire control
+//  v2.1 - February 26, 2023
+//     - Fixed ghost autofired buttons with original NES controllers
+//     - Added Pullup on DATA pin
+//     - Unified NES/SNES PC Button mapping
 //                                                  
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -48,20 +53,24 @@
 // USB Joystick Mapping
 //  
 //   USB       == SNES ==     == NES ==
-//  Y Axis   -  Up/Down    -  Up/Down  
-//  X Axis   - Left/Right  - Left/Right 
-//  Button 1 -     X       -     A
-//  Button 2 -     A       -     B
-//  Button 3 -     B       -   Select  
-//  Button 4 -     Y       -   Start
-//  Button 5 -   Top L     - 
-//  Button 6     Top R     - 
-//  Button 7 -   Select    - 
-//  Button 8 -   Start     - 
+//  Y Axis   -  Up/Down    -   Up/Down  
+//  X Axis   - Left/Right  -  Left/Right
+//  Button 1 -     A       -      A     
+//  Button 2 -     B       -      B     
+//  Button 3 -     x       -      -     
+//  Button 4 -     Y       -      -     
+//  Button 5 -   Top L     -      -   
+//  Button 6     Top R     -      -   
+//  Button 7 -   Select    -    Select  
+//  Button 8 -   Start     -    Start  
 //  
 // See details about the SNES controller protocol at the ending remarks
 
-
+enum controllerType {
+  SNES = 0,
+  NES,
+  NONE = 0xff
+};
 					
 ////////////////////////////////////////////////////////////////////////////////					
 //   __   __        _      _    _        
@@ -100,56 +109,73 @@ uint16_t get_buttons(void) {
     //   11  10   9   8   7   6   5   4   3   2   1   0
     //   Up  Dw   Lf  Rt  St  Sl  Tr  Tl  Y   B   A   X
     //
-	uint16_t buttons=0;
+  uint16_t combinedButtons=0;
+  
+  uint8_t i, controllerType;
+  uint16_t dataIn;
 
-	//latch buttons state. After latching, button B state is ready at data output
-	digitalWrite(latchPin, HIGH);
-	delayMicroseconds(12);
-	digitalWrite(latchPin, LOW);
-	digitalWrite(clockPin,LOW);
+  //latch buttons state. After latching, first button is ready at data output
+  digitalWrite(latchPin, HIGH);
+  delayMicroseconds(12);
+  digitalWrite(latchPin, LOW);
+  digitalWrite(clockPin, LOW);
 
-	// read the buttons	and store their values
-	if (!digitalRead(dataPin)) buttons |= (1<<2); // B
-	Pulse_clock();
-	
-	if (!digitalRead(dataPin)) buttons |= (1<<3); // Y
-	Pulse_clock();
+  // read 16 bits from the controller
+  dataIn = 0;
+  for (i = 0; i < 16; i++) {
+    dataIn >>= 1;
+    if (digitalRead(dataPin) == 0) dataIn |= (1 << 15) ; // shift in one bit
+    Pulse_clock();
+  }
 
-	if (!digitalRead(dataPin)) buttons |= (1<<7); // Select 
-	Pulse_clock();
+  if (digitalRead(dataPin)) { // 17th bit received should be a zero if an original controller is attached
+    controllerType = NONE;
+  } else {
+    if ( (dataIn & 0xf000) == 0x0000)
+      controllerType = SNES;
+    else  if ( (dataIn & 0xff00) == 0xff00)
+      controllerType = NES;
+    else
+      controllerType = NONE;
+  }
 
-	if (!digitalRead(dataPin)) buttons |= (1<<6); // Start 
-	Pulse_clock();
+  // Return Clock signal to idle level.
+  digitalWrite(clockPin, HIGH);
 
-	if (!digitalRead(dataPin)) buttons |= (1<<11); // Up 
-	Pulse_clock();
 
-	if (!digitalRead(dataPin)) buttons |= (1<<10); // Down 
-	Pulse_clock();
+    //   11  10   9   8   7   6   5   4   3   2   1   0
+    //   Up  Dw   Lf  Rt  St  Sl  Tr  Tl  Y   X   B   A 
 
-	if (!digitalRead(dataPin)) buttons |= (1<<9); // Left 
-	Pulse_clock();
+  combinedButtons = 0;
 
-	if (!digitalRead(dataPin)) buttons |= (1<<8); // Right 
-	Pulse_clock();
+  // Common buttons
+  if (dataIn & (1 << 2 )) combinedButtons |= (1 << 6 ); // Select
+  if (dataIn & (1 << 3 )) combinedButtons |= (1 << 7 ); // Start
+  if (dataIn & (1 << 4 )) combinedButtons |= (1 << 11); // Up
+  if (dataIn & (1 << 5 )) combinedButtons |= (1 << 10); // Down
+  if (dataIn & (1 << 6 )) combinedButtons |= (1 << 9 ); // Left
+  if (dataIn & (1 << 7 )) combinedButtons |= (1 << 8 ); // Right
 
-	if (!digitalRead(dataPin)) buttons |= (1<<1); // A  
-	Pulse_clock();
 
-	if (!digitalRead(dataPin)) buttons |= (1<<0); // X 
-	Pulse_clock();
+  if (controllerType == SNES)  {
+    if (dataIn & (1 << 8 )) combinedButtons |= (1 << 0 ); // A
+    if (dataIn & (1 << 0 )) combinedButtons |= (1 << 1 ); // B
+    if (dataIn & (1 << 9 )) combinedButtons |= (1 << 2 ); // X
+    if (dataIn & (1 << 1 )) combinedButtons |= (1 << 3 ); // Y
+    if (dataIn & (1 << 10)) combinedButtons |= (1 << 4 ); // L
+    if (dataIn & (1 << 11)) combinedButtons |= (1 << 5 ); // R
 
-	if (!digitalRead(dataPin)) buttons |= (1<<4); // Top Left 
-	Pulse_clock();
+  } else { //  NES / Knockoff
+    if (dataIn & (1 << 0 )) combinedButtons |= (1 << 0 ); // A
+    if (dataIn & (1 << 1 )) combinedButtons |= (1 << 1 ); // B
+  }
 
-	if (!digitalRead(dataPin)) buttons |= (1<<5); // Top Right 
-	Pulse_clock();
 
-	// Return Clock signal to idle level.
-	digitalWrite(clockPin,HIGH);
-	
-	return buttons;
-}	
+
+  return combinedButtons;
+}
+
+//
 
 ////////////////////////////////////////////////////////////////////////////////
 //    ___      _             
@@ -163,7 +189,7 @@ void setup(){
 	
 	pinMode(clockPin,OUTPUT);
 	pinMode(latchPin,OUTPUT);
-	pinMode(dataPin,INPUT);
+	pinMode(dataPin,INPUT_PULLUP);
 	digitalWrite(clockPin,HIGH);
 	digitalWrite(latchPin,LOW);
 
@@ -198,7 +224,7 @@ void loop(){
 	uint16_t Buttons = get_buttons();
 
 	// fill in buttons                             7   6   5   4   3   2   1   0  bit
-	Buttons_low=(uint8_t)(Buttons & 0xff);    //   St  Sl  Tr  Tl  Y   B   A   X  button  
+	Buttons_low=(uint8_t)(Buttons & 0xff);    //   St  Sl  Tr  Tl  Y   X   B   A  button  
 	Buttons_high=0;                       // SNES controller uses only 8 out of 16 buttons                     
 
 	// Now modulate buttons with autofire 
@@ -231,26 +257,25 @@ void loop(){
 //   |_| |_| \___/\__\___/\__\___/_| |___/\___|\__\__,_|_|_/__/
 //                                                             
 ////////////////////////////////////////////////////////////////////////////////
-
-/*  SNES Controller Protocol
+/*  Controller wavefrorms
                 ____
-    Latch  ____/    \____________________________________________________________________________________________________ 
-           ____________    __    __    __    __    __    __    __    __    __    __    __    __    __    __    __________  
-    Clock              \__/  \__/  \__/  \__/  \__/  \__/  \__/  \__/  \__/  \__/  \__/  \__/  \__/  \__/  \__/             
-           _________                                                                                                _____
-    Data            [  B ][  Y ][ Sl ][ St ][ UP ][DOWN][LEFT][RIGH][  A ][  X ][TopL][TopR][  1 ][  1 ][  1 ][  1 ]
+    Latch  ____/    \_____________________________________________________________________________________________________
+           ____________    __    __    __    __    __    __    __    __    __    __    __    __    __    __    ___    ____ 
+    Clock              \__/  \__/  \__/  \__/  \__/  \__/  \__/  \__/  \__/  \__/  \__/  \__/  \__/  \__/  \__/   \__/         
 
-	*/
+    SNES   _________                                                                                                      
+    Data            [  B ][  Y ][ Sl ][ St ][ UP ][DOWN][LEFT][RIGH][  A ][  X ][TopL][TopR][  1 ][  1 ][  1 ][  1 ][  0 ]
 
-/*  NES Controller Protocol
-                ____
-    Latch  ____/    \_____________________________________________________ 
-           ____________    __    __    __    __    __    __    __    _____  
-    Clock              \__/  \__/  \__/  \__/  \__/  \__/  \__/  \__/        
-           _________                                                ______
-    Data            [  A ][  B ][ Sl ][ St ][ UP ][DOWN][LEFT][RIGH]
+    NES    _________                                                
+    Data            [  A ][  B ][ Sl ][ St ][ UP ][DOWN][LEFT][RIGH][  0 ][  0 ][  0 ][  0 ][  0 ][  0 ][  0 ][  0 ][  0 ]
+    
+    Clone NES ______                                                
+    Data            [  A ][  B ][ Sl ][ St ][ UP ][DOWN][LEFT][RIGH][  1 ][  1 ][  1 ][  1 ][  1 ][  1 ][  1 ][  1 ][  1 ]  
+    
+    Nth bit         <  1 ><  2 ><  3 ><  4 ><  5 ><  6 ><  7 ><  8 ><  9 >< 10 >< 11 >< 12 >< 13 >< 14 >< 15 >< 16 >< 17 >
 
-	*/	
+    Bits 14 to 17 can be used to differentiate between controllers -------------------------------|______________________|
+
+*/
 	
 	
-
